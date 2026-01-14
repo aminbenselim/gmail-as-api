@@ -1,4 +1,6 @@
+import crypto from "crypto";
 import fs from "fs";
+import path from "path";
 import express from "express";
 import "dotenv/config";
 import { google } from "googleapis";
@@ -8,6 +10,12 @@ const require = createRequire(import.meta.url);
 const MailComposer = require("nodemailer/lib/mail-composer");
 
 const BODY_LIMIT = process.env.BODY_LIMIT || "25mb";
+const AUTH_STATE_TTL_MS = Number.parseInt(
+  process.env.AUTH_STATE_TTL_MS || "600000",
+  10
+);
+const AUTH_SUCCESS_REDIRECT = process.env.AUTH_SUCCESS_REDIRECT;
+const AUTH_FAILURE_REDIRECT = process.env.AUTH_FAILURE_REDIRECT;
 
 const app = express();
 app.use(express.json({ limit: BODY_LIMIT }));
@@ -17,7 +25,8 @@ const {
   API_KEY,
   FROM_EMAIL,
   TOKENS_PATH = "tokens.json",
-  ALLOW_FROM_OVERRIDE
+  ALLOW_FROM_OVERRIDE,
+  AUTH_KEY
 } = process.env;
 
 if (!API_KEY) {
@@ -30,6 +39,8 @@ if (!FROM_EMAIL) {
 }
 
 let cachedAuthClient = null;
+const oauthStates = new Map();
+const SCOPES = ["https://www.googleapis.com/auth/gmail.send"];
 
 class ValidationError extends Error {
   constructor(message) {
@@ -41,15 +52,6 @@ class ValidationError extends Error {
 function loadOAuthClient() {
   if (cachedAuthClient) return cachedAuthClient;
 
-  const {
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI
-  } = process.env;
-
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
-    throw new Error("Missing Google OAuth env vars");
-  }
   if (!fs.existsSync(TOKENS_PATH)) {
     throw new Error(`tokens.json not found at ${TOKENS_PATH}. Run: npm run auth`);
   }
@@ -59,11 +61,7 @@ function loadOAuthClient() {
     throw new Error("tokens.json missing refresh_token. Re-run auth with prompt=consent.");
   }
 
-  const oAuth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI
-  );
+  const oAuth2Client = createOAuthClient();
   oAuth2Client.setCredentials(tokens);
 
   oAuth2Client.on("tokens", (newTokens) => {
@@ -78,6 +76,24 @@ function loadOAuthClient() {
 
   cachedAuthClient = oAuth2Client;
   return cachedAuthClient;
+}
+
+function createOAuthClient() {
+  const {
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  } = process.env;
+
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+    throw new Error("Missing Google OAuth env vars");
+  }
+
+  return new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
 }
 
 function base64UrlEncode(buffer) {
@@ -175,6 +191,23 @@ function normalizeHeaders(headers) {
   return normalized;
 }
 
+function cleanupStates() {
+  const now = Date.now();
+  for (const [state, meta] of oauthStates.entries()) {
+    if (now - meta.createdAt > AUTH_STATE_TTL_MS) {
+      oauthStates.delete(state);
+    }
+  }
+}
+
+function ensureAuthKey(req) {
+  if (!AUTH_KEY) return;
+  const key = req.query.key || req.header("x-auth-key");
+  if (key !== AUTH_KEY) {
+    throw new ValidationError("Unauthorized");
+  }
+}
+
 function buildMimeMessage(mail) {
   return new Promise((resolve, reject) => {
     mail.compile().build((err, message) => {
@@ -185,6 +218,77 @@ function buildMimeMessage(mail) {
 }
 
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.get("/auth/start", (req, res) => {
+  try {
+    ensureAuthKey(req);
+    cleanupStates();
+
+    const state = crypto.randomBytes(16).toString("hex");
+    oauthStates.set(state, { createdAt: Date.now() });
+
+    const oAuth2Client = createOAuthClient();
+    const url = oAuth2Client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: SCOPES,
+      state
+    });
+
+    res.redirect(url);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return res.status(401).json({ error: e.message });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/auth/callback", async (req, res) => {
+  try {
+    const { code, state, error } = req.query || {};
+    if (error) {
+      if (AUTH_FAILURE_REDIRECT) return res.redirect(AUTH_FAILURE_REDIRECT);
+      return res.status(400).send("Authorization failed.");
+    }
+    if (!code || !state) {
+      throw new ValidationError("Missing code or state.");
+    }
+
+    const stored = oauthStates.get(state);
+    if (!stored) {
+      throw new ValidationError("Invalid or expired state.");
+    }
+    oauthStates.delete(state);
+
+    const oAuth2Client = createOAuthClient();
+    const { tokens } = await oAuth2Client.getToken(String(code));
+
+    const existing = fs.existsSync(TOKENS_PATH)
+      ? JSON.parse(fs.readFileSync(TOKENS_PATH, "utf8"))
+      : {};
+    const merged = { ...existing, ...tokens };
+
+    if (!merged.refresh_token) {
+      throw new Error("No refresh token received. Revoke app and retry.");
+    }
+
+    const dir = path.dirname(TOKENS_PATH);
+    if (dir && dir !== ".") {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(TOKENS_PATH, JSON.stringify(merged, null, 2));
+
+    if (AUTH_SUCCESS_REDIRECT) return res.redirect(AUTH_SUCCESS_REDIRECT);
+    res.send("Authorization successful. You can now use /send.");
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return res.status(400).send(e.message);
+    }
+    res.status(500).send(e.message);
+  }
+});
 
 app.post("/send", async (req, res) => {
   try {
