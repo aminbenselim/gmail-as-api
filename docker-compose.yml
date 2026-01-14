@@ -3,8 +3,12 @@ services:
     image: ghcr.io/aminbenselim/gmail-as-api:latest
     ports:
       - "3000:3000"
-    env_file:
-      - .env
+    environment:
+      GOOGLE_CLIENT_ID: "YOUR_CLIENT_ID"
+      GOOGLE_CLIENT_SECRET: "YOUR_CLIENT_SECRET"
+      GOOGLE_REDIRECT_URI: "https://your-domain.example/auth/callback"
+      API_KEY: "change-me-long-random"
+      FROM_EMAIL: "you@gmail.com"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

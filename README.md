@@ -36,6 +36,8 @@ Key variables:
 - `API_KEY` for `/send`
 - `FROM_EMAIL` (must be your Gmail address or alias)
 
+For Docker Compose, set these values directly in `docker-compose.yml` under `environment`.
+
 API_KEY:
 
 - Use a long random string as a shared secret for the `/send` endpoint.
@@ -97,10 +99,16 @@ docker run -p 3000:3000 --env-file .env -v "$PWD/data:/app/data" gmail-sender
 
 ## Run with Docker Compose (persistent tokens)
 
-Edit `docker-compose.yml` to use your GHCR image (replace `OWNER/REPO`):
+Edit `docker-compose.yml` to set your GHCR image and env values:
 
 ```yaml
 image: ghcr.io/OWNER/REPO:latest
+environment:
+  GOOGLE_CLIENT_ID: "YOUR_CLIENT_ID"
+  GOOGLE_CLIENT_SECRET: "YOUR_CLIENT_SECRET"
+  GOOGLE_REDIRECT_URI: "https://your-domain.example/auth/callback"
+  API_KEY: "change-me-long-random"
+  FROM_EMAIL: "you@gmail.com"
 ```
 
 Then:
