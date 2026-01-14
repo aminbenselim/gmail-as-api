@@ -9,25 +9,16 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const MailComposer = require("nodemailer/lib/mail-composer");
 
-const BODY_LIMIT = process.env.BODY_LIMIT || "25mb";
-const AUTH_STATE_TTL_MS = Number.parseInt(
-  process.env.AUTH_STATE_TTL_MS || "600000",
-  10
-);
-const AUTH_SUCCESS_REDIRECT = process.env.AUTH_SUCCESS_REDIRECT;
-const AUTH_FAILURE_REDIRECT = process.env.AUTH_FAILURE_REDIRECT;
+const BODY_LIMIT = "25mb";
+const AUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const DATA_DIR = path.resolve("data");
+const TOKENS_PATH = path.join(DATA_DIR, "tokens.json");
 
 const app = express();
 app.use(express.json({ limit: BODY_LIMIT }));
 
-const {
-  PORT = 3000,
-  API_KEY,
-  FROM_EMAIL,
-  TOKENS_PATH = "tokens.json",
-  ALLOW_FROM_OVERRIDE,
-  AUTH_KEY
-} = process.env;
+const PORT = 3000;
+const { API_KEY, FROM_EMAIL } = process.env;
 
 if (!API_KEY) {
   console.error("Missing API_KEY in .env");
@@ -53,7 +44,9 @@ function loadOAuthClient() {
   if (cachedAuthClient) return cachedAuthClient;
 
   if (!fs.existsSync(TOKENS_PATH)) {
-    throw new Error(`tokens.json not found at ${TOKENS_PATH}. Run: npm run auth`);
+    throw new Error(
+      `tokens.json not found at ${TOKENS_PATH}. Run: npm run auth or visit /auth/start.`
+    );
   }
 
   const tokens = JSON.parse(fs.readFileSync(TOKENS_PATH, "utf8"));
@@ -68,6 +61,7 @@ function loadOAuthClient() {
     if (!newTokens.access_token && !newTokens.refresh_token) return;
     const merged = { ...oAuth2Client.credentials, ...newTokens };
     try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(TOKENS_PATH, JSON.stringify(merged, null, 2));
     } catch (err) {
       console.warn("Failed to update tokens.json:", err.message);
@@ -200,14 +194,6 @@ function cleanupStates() {
   }
 }
 
-function ensureAuthKey(req) {
-  if (!AUTH_KEY) return;
-  const key = req.query.key || req.header("x-auth-key");
-  if (key !== AUTH_KEY) {
-    throw new ValidationError("Unauthorized");
-  }
-}
-
 function buildMimeMessage(mail) {
   return new Promise((resolve, reject) => {
     mail.compile().build((err, message) => {
@@ -221,7 +207,6 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 app.get("/auth/start", (req, res) => {
   try {
-    ensureAuthKey(req);
     cleanupStates();
 
     const state = crypto.randomBytes(16).toString("hex");
@@ -237,9 +222,6 @@ app.get("/auth/start", (req, res) => {
 
     res.redirect(url);
   } catch (e) {
-    if (e instanceof ValidationError) {
-      return res.status(401).json({ error: e.message });
-    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -248,7 +230,6 @@ app.get("/auth/callback", async (req, res) => {
   try {
     const { code, state, error } = req.query || {};
     if (error) {
-      if (AUTH_FAILURE_REDIRECT) return res.redirect(AUTH_FAILURE_REDIRECT);
       return res.status(400).send("Authorization failed.");
     }
     if (!code || !state) {
@@ -273,14 +254,9 @@ app.get("/auth/callback", async (req, res) => {
       throw new Error("No refresh token received. Revoke app and retry.");
     }
 
-    const dir = path.dirname(TOKENS_PATH);
-    if (dir && dir !== ".") {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
+    fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(TOKENS_PATH, JSON.stringify(merged, null, 2));
 
-    if (AUTH_SUCCESS_REDIRECT) return res.redirect(AUTH_SUCCESS_REDIRECT);
     res.send("Authorization successful. You can now use /send.");
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -304,7 +280,6 @@ app.post("/send", async (req, res) => {
       bcc,
       replyTo,
       replyToName,
-      from,
       fromName,
       headers,
       inReplyTo,
@@ -326,9 +301,7 @@ app.post("/send", async (req, res) => {
     const auth = loadOAuthClient();
     const gmail = google.gmail({ version: "v1", auth });
 
-    const allowFromOverride = ALLOW_FROM_OVERRIDE === "true";
-    const fromAddress = allowFromOverride && from ? from : FROM_EMAIL;
-    const formattedFrom = formatAddress(fromAddress, fromName);
+    const formattedFrom = formatAddress(FROM_EMAIL, fromName);
     const formattedReplyTo = formatAddress(replyTo, replyToName);
 
     const mail = new MailComposer({

@@ -1,15 +1,10 @@
 services:
-  gmail-sender:
-    image: ${IMAGE:-ghcr.io/OWNER/REPO:latest}
+  gmail-as-api:
+    image: ghcr.io/aminbenselim/gmail-as-api:latest
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "3000:3000"
     env_file:
       - .env
-    environment:
-      TOKENS_PATH: /data/tokens.json
     volumes:
-      - gmail_tokens:/data
+      - ./data:/app/data
     restart: unless-stopped
-
-volumes:
-  gmail_tokens:

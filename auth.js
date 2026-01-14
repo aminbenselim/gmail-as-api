@@ -1,4 +1,5 @@
 import fs from "fs";
+import path from "path";
 import readline from "readline";
 import "dotenv/config";
 import { google } from "googleapis";
@@ -6,9 +7,11 @@ import { google } from "googleapis";
 const {
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI,
-  TOKENS_PATH = "tokens.json"
+  GOOGLE_REDIRECT_URI
 } = process.env;
+
+const DATA_DIR = path.resolve("data");
+const TOKENS_PATH = path.join(DATA_DIR, "tokens.json");
 
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
   console.error("Missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI in .env");
@@ -42,6 +45,7 @@ rl.question("> ",
       if (!tokens.refresh_token) {
         console.warn("\nNo refresh_token received. Re-run auth after revoking access or ensure prompt=consent.\n");
       }
+      fs.mkdirSync(DATA_DIR, { recursive: true });
       fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2));
       console.log(`\nSaved ${TOKENS_PATH}. You can now run the server.\n`);
     } catch (err) {

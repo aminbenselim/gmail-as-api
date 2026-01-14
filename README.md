@@ -35,8 +35,28 @@ Key variables:
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
 - `API_KEY` for `/send`
 - `FROM_EMAIL` (must be your Gmail address or alias)
-- `AUTH_KEY` (optional, protects `/auth/start`)
-- `TOKENS_PATH` (use `/data/tokens.json` in Docker Compose)
+
+API_KEY:
+
+- Use a long random string as a shared secret for the `/send` endpoint.
+- Generate one locally, then place it in `.env`.
+
+Example:
+
+```bash
+openssl rand -hex 32
+```
+
+Then set:
+
+```bash
+API_KEY=your-generated-value
+```
+
+Token storage:
+
+- Tokens are always stored at `data/tokens.json` (relative to the project).
+- The `data/` directory is created automatically during the auth flow.
 
 ## Browser OAuth (recommended for server deployments)
 
@@ -44,14 +64,10 @@ Key variables:
 2. Open in your browser:
 
 ```
-https://your-domain.example/auth/start?key=YOUR_AUTH_KEY
+https://your-domain.example/auth/start
 ```
 
-3. Approve access; tokens are saved to `TOKENS_PATH`.
-
-Optional:
-- `AUTH_SUCCESS_REDIRECT` and `AUTH_FAILURE_REDIRECT` to redirect after auth.
-- `AUTH_STATE_TTL_MS` (default 10 minutes) for OAuth state expiration.
+3. Approve access; tokens are saved to `data/tokens.json`.
 
 ## Local One-Time Auth (optional)
 
@@ -62,7 +78,7 @@ npm install
 npm run auth
 ```
 
-This writes `tokens.json` in the project directory.
+This writes `data/tokens.json`.
 
 ## Run Locally
 
@@ -75,7 +91,8 @@ npm start
 
 ```bash
 docker build -t gmail-sender .
-docker run -p 3000:3000 --env-file .env -v "$PWD/tokens.json:/app/tokens.json:ro" gmail-sender
+mkdir -p data
+docker run -p 3000:3000 --env-file .env -v "$PWD/data:/app/data" gmail-sender
 ```
 
 ## Run with Docker Compose (persistent tokens)
@@ -89,16 +106,17 @@ image: ghcr.io/OWNER/REPO:latest
 Then:
 
 ```bash
+mkdir -p data
 docker compose up -d
 ```
 
 To perform browser auth, open:
 
 ```
-https://your-domain.example/auth/start?key=YOUR_AUTH_KEY
+https://your-domain.example/auth/start
 ```
 
-Tokens are stored in the `gmail_tokens` volume at `/data/tokens.json`.
+Tokens are stored in `./data/tokens.json` on the host (mounted to `/app/data/tokens.json`).
 
 ## GitHub Actions (CI Build)
 
@@ -188,7 +206,6 @@ Supported fields:
 - `to`, `cc`, `bcc`
 - `subject`
 - `text`, `html`
-- `from` (only if `ALLOW_FROM_OVERRIDE=true`)
 - `fromName`, `replyTo`, `replyToName`
 - `headers` (object of header name → value)
 - `inReplyTo`, `references`, `messageId`, `priority`
@@ -196,12 +213,11 @@ Supported fields:
 
 ## Security Notes
 
-- Keep `API_KEY` and `AUTH_KEY` long and random.
-- Do not expose `/auth/start` publicly unless protected by `AUTH_KEY`.
+- Keep `API_KEY` long and random.
 - `FROM_EMAIL` must be a valid Gmail address or alias on the authenticated account.
 
 ## Troubleshooting
 
 - No refresh token: revoke the app in Google Account security settings, then re-authorize.
 - 400 from Gmail API: check that `FROM_EMAIL` matches your account/alias and that the OAuth client has the correct redirect URI.
-- Large attachments: raise `BODY_LIMIT` and ensure Gmail raw size limits are not exceeded (~35 MB).
+- Large attachments: Gmail raw size limits apply (~35 MB).
